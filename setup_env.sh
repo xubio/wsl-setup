@@ -6,6 +6,7 @@
 
 set -e
 
+
 PASSWORD="$1"
 if [ -z "$PASSWORD" ]; then
     echo "Usage: $0 password"
@@ -13,6 +14,9 @@ if [ -z "$PASSWORD" ]; then
 fi
 echo "some portions of this script must run as root.  Need your sudo password"
 sudo echo "sudo access available, proceeding"
+
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+cd $SCRIPT_DIR
 
 # 1. Update system
 echo "=== Updating system ==="
