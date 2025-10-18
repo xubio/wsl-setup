@@ -21,8 +21,11 @@ sudo apt upgrade -y
 
 # 2. Install packages from pkglist.txt
 if [ -f pkglist.txt ]; then
-    echo "=== Installing APT packages from pkglist.txt ==="
-    xargs sudo apt install -y < pkglist.txt
+    pkgs=`cat pkglist.txt`
+    for pkg in $pkgs ; do
+        echo "=== APT: Installing $pkg ==="
+        sudo apt install -y $pkg
+    done
 else
     echo "Warning: pkglist.txt not found, skipping APT packages."
 fi
@@ -30,12 +33,6 @@ sudo apt install -y python3-pip
 
 # 3. Install Python packages
 pip3 install pdfplumber --break-system-packages
-#if [ -f requirements.txt ]; then
-#    echo "=== Installing Python packages ==="
-#    pip3 install --no-cache-dir -r requirements.txt
-#else
-#    echo "Warning: requirements.txt not found."
-#fi
 
 # 4. Restore Apache configuration
 if [ -d apache2 ]; then
