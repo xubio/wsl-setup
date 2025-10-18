@@ -15,7 +15,6 @@ dash
 debianutils
 diffutils
 direnv
-docker-ce
 dos2unix
 emacs-gtk
 exuberant-ctags
