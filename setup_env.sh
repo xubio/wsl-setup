@@ -31,9 +31,6 @@ else
 fi
 sudo apt install -y python3-pip
 
-# 3. Install Python packages
-pip3 install pdfplumber --break-system-packages
-
 # 4. Restore Apache configuration
 if [ -d apache2 ]; then
     echo "=== Restoring Apache configuration ==="
@@ -61,7 +58,7 @@ fi
 
 # Get ledger repo:
 gh repo clone oohomes_ledger
-pip3 install -r oohomes_ledger/requirements.txt
+pip3 install -r oohomes_ledger/requirements.txt --break-system-packages
 sudo ln -s $HOME/oohomes_ledger /var/www/oohomes
 
 sudo apachectl start 
