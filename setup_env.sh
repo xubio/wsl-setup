@@ -26,6 +26,7 @@ if [ -f pkglist.txt ]; then
 else
     echo "Warning: pkglist.txt not found, skipping APT packages."
 fi
+sudo apt install -y python3-pip
 
 # 3. Install Python packages
 pip3 install pdfplumber --break-system-packages
