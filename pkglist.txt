@@ -16,7 +16,6 @@ debianutils
 diffutils
 direnv
 dos2unix
-emacs-gtk
 exuberant-ctags
 findutils
 gh
