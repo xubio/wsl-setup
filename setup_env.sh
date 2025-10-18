@@ -11,6 +11,8 @@ if [ -z "$PASSWORD" ]; then
     echo "Usage: $0 password"
     exit 1
 fi
+echo "some portions of this script must run as root.  Need your sudo password"
+sudo echo "sudo access available, proceeding"
 
 # 1. Update system
 echo "=== Updating system ==="
@@ -26,12 +28,13 @@ else
 fi
 
 # 3. Install Python packages
-if [ -f requirements.txt ]; then
-    echo "=== Installing Python packages ==="
-    pip3 install --no-cache-dir -r requirements.txt
-else
-    echo "Warning: requirements.txt not found."
-fi
+pip3 install pdfplumber --break-system-packages
+#if [ -f requirements.txt ]; then
+#    echo "=== Installing Python packages ==="
+#    pip3 install --no-cache-dir -r requirements.txt
+#else
+#    echo "Warning: requirements.txt not found."
+#fi
 
 # 4. Restore Apache configuration
 if [ -d apache2 ]; then
@@ -58,6 +61,11 @@ if [ -f system-info.txt ]; then
     cat system-info.txt
 fi
 
-echo
+# Get ledger repo:
+gh repo clone oohomes_ledger
+pip3 install -r oohomes_ledger/requirements.txt
+sudo ln -s $HOME/oohomes_ledger /var/www/oohomes
+
+sudo apachectl start 
 echo "=== Environment rebuild complete ==="
 echo "You may need to log out and back in for changes to dotfiles and shell configs to take effect."

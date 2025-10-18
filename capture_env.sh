@@ -27,11 +27,12 @@ apt list --installed > apt-installed.txt 2>/dev/null || true
 git add pkglist.txt apt-installed.txt
 
 # 2. Python packages (system and virtualenvs)
-echo "--- Capturing Python packages ---"
-if command -v pip3 >/dev/null 2>&1; then
-    pip3 freeze > requirements.txt || true
-    git add requirements.txt
-fi
+#echo "--- Capturing Python packages ---"
+# 
+#if command -v pip3 >/dev/null 2>&1; then
+#    pip3 freeze > requirements.txt || true
+#    git add requirements.txt
+#fi
 
 # 3. Apache configuration (if present)
 if [ -d /etc/apache2 ]; then
