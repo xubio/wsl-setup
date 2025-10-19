@@ -18,12 +18,12 @@ sudo echo "sudo access available, proceeding"
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 cd $SCRIPT_DIR
 
-# 1. Update system
+# Update system
 echo "=== Updating system ==="
 sudo apt update
 sudo apt upgrade -y
 
-# 2. Install packages from pkglist.txt
+# Install packages from pkglist.txt
 if [ -f pkglist.txt ]; then
     pkgs=`cat pkglist.txt`
     for pkg in $pkgs ; do
@@ -35,16 +35,17 @@ else
 fi
 sudo apt install -y python3-pip
 
-# 4. Restore Apache configuration
+# Restore Apache configuration
 if [ -d apache2 ]; then
     echo "=== Restoring Apache configuration ==="
     sudo cp -r apache2 /etc/
+    sudo a2dissite 000-default.conf
     sudo systemctl restart apache2 || true
 else
     echo "No apache2 directory found, skipping Apache restore."
 fi
 
-# 5. Decrypt and extract config archive
+# Decrypt and extract config archive
 if [ -f config.asc ]; then
     echo "=== Decrypting and extracting config.tgz ==="
     gpg --batch --yes --passphrase "$PASSWORD" -d -o config.tgz config.asc
@@ -52,12 +53,6 @@ if [ -f config.asc ]; then
     rm -f config.tgz
 else
     echo "No config.asc found, skipping config restore."
-fi
-
-# 6. Restore system info note (optional)
-if [ -f system-info.txt ]; then
-    echo "=== System info snapshot available ==="
-    cat system-info.txt
 fi
 
 # Get ledger repo:
@@ -76,7 +71,5 @@ chmod a+w $HOME/oohomes_ledger/sessions.json
 
 ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Invoices $HOME/oohomes_ledger/invoices
 ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Leases $HOME/oohomes_ledger/leases
-
-sudo apachectl start 
 echo "=== Environment rebuild complete ==="
 echo "You may need to log out and back in for changes to dotfiles and shell configs to take effect."
