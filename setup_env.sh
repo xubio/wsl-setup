@@ -61,9 +61,21 @@ if [ -f system-info.txt ]; then
 fi
 
 # Get ledger repo:
+pushd ~/
 gh repo clone oohomes_ledger
 pip3 install -r oohomes_ledger/requirements.txt --break-system-packages
 sudo ln -s $HOME/oohomes_ledger /var/www/oohomes
+popd
+
+# apache will need access to html files
+chmod a+rx $HOME
+chmod a+rx $HOME/oohomes_ledger
+chmod a+rx $HOME/oohomes_ledger/html
+touch $HOME/oohomes_ledger/sessions.json
+chmod a+w $HOME/oohomes_ledger/sessions.json
+
+ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Invoices $HOME/oohomes_ledger/invoices
+ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Leases $HOME/oohomes_ledger/leases
 
 sudo apachectl start 
 echo "=== Environment rebuild complete ==="
