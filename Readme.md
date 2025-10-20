@@ -1,8 +1,8 @@
 # Overview #
-This repo contains all code to set up a WSL environment for oohomes property financials
 -------------------------------------------------------------------------------
-# Usage: #
+This repo contains all code to set up a WSL environment for oohomes property financials
 
+# Usage: #
 
 1. Download wsl-install.ps1 on windows machine from:
     https://raw.githubusercontent.com/xubio/wsl-setup/refs/heads/main/wsl-install.ps1
