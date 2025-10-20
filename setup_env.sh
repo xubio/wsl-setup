@@ -66,8 +66,8 @@ popd
 chmod a+rx $HOME
 chmod a+rx $HOME/oohomes_ledger
 chmod a+rx $HOME/oohomes_ledger/html
-touch $HOME/oohomes_ledger/sessions.json
-chmod a+w $HOME/oohomes_ledger/sessions.json
+touch $HOME/oohomes_ledger/html/.sessions.json
+chmod a+w $HOME/oohomes_ledger/html/.sessions.json
 
 ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Invoices $HOME/oohomes_ledger/invoices
 ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Leases $HOME/oohomes_ledger/leases
