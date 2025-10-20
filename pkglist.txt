@@ -6,7 +6,6 @@ bash
 bc
 bsdutils
 ca-certificates
-chromium-browser
 cmake
 coreutils
 cscope
@@ -21,8 +20,6 @@ findutils
 gh
 grep
 gzip
-hledger
-hledger-web
 hostname
 inetutils-telnet
 init
@@ -58,8 +55,6 @@ tcl
 tkcon
 tkcvs
 tmuxinator
-ubuntu-minimal
-ubuntu-wsl
 unzip
 util-linux
 zip
