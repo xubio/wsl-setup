@@ -1,6 +1,9 @@
-# Overview #
--------------------------------------------------------------------------------
+# oohomes wsl #
+## Oohomes rental property financials environment
+
 This repo contains all code to set up a WSL environment for oohomes property financials
+
+-------------------------------------------------------------------------------
 
 # Usage: #
 
