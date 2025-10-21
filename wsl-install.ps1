@@ -3,7 +3,7 @@
 # ==============================
 
 param(
-    [string]$DistroName = "oohomes-ubuntu"
+    [string]$DistroName = "oohomes-debian"
 )
 $pass = Read-Host "Enter password to use for setup_env.sh"
 
@@ -30,7 +30,7 @@ if ($existing -contains $DistroName) {
 
 # --- Install Ubuntu 22.04
 Write-Host "Installing Ubuntu 24.04 as '$DistroName'..."
-Write-Host "cmd: wsl --install -d Ubuntu-24.04 --name $DistroName --no-launch"
+Write-Host "cmd: wsl --install -d Debian --name $DistroName --no-launch"
 wsl --install -d Ubuntu-24.04 --name $DistroName --no-launch
 
 # --- Create non-password user
