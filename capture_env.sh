@@ -9,6 +9,7 @@ set -e
 password=$1
 if [ "$password" == "" ] ; then
     echo "empty password, you must supply one to encrypt sensitive info"
+    exit 0
 fi
 
 DATA_DIRS=(
@@ -24,7 +25,7 @@ echo "=== Capturing environment as of $TIMESTAMP ==="
 echo "--- Capturing installed APT packages ---"
 apt-mark showmanual | sort > pkglist.txt
 apt list --installed > apt-installed.txt 2>/dev/null || true
-git add pkglist.txt apt-installed.txt
+#git add pkglist.txt apt-installed.txt
 
 # 2. Python packages (system and virtualenvs)
 #echo "--- Capturing Python packages ---"
@@ -38,19 +39,10 @@ git add pkglist.txt apt-installed.txt
 if [ -d /etc/apache2 ]; then
     echo "--- Archiving Apache configuration ---"
     cp -r /etc/apache2 .
-    git add apache2
+#    git add apache2
 fi
 
-# 4. System info (for debugging/rebuild context)
-echo "--- Capturing system info ---"
-{
-    echo "Hostname: $(hostname)"
-    echo "Distro: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | head -n 1)"
-    uname -a
-} > system-info.txt
-git add system-info.txt
-
-#5. tar up the config files.  These include secrets for git and such, so encrypt the data with supplied password
+#4. tar up the config files.  These include secrets for git and such, so encrypt the data with supplied password
 thisdir=`pwd`
 pushd ~/
 echo "./.config/gh" > tlist
@@ -59,7 +51,7 @@ tar -czf $thisdir/config.tgz -T tlist
 rm -f tlist
 popd
 gpg --batch --yes --passphrase $password --symmetric --cipher-algo AES256 --armor -o config.asc config.tgz
-git add config.asc
+#git add config.asc
 
 echo
 echo "Environment snapshot complete."
