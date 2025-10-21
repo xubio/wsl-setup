@@ -25,7 +25,7 @@ sudo apt upgrade -y
 
 # Install packages from pkglist.txt
 if [ -f pkglist.txt ] ; then
-    sudo apt install -y $(cat $pkg)
+    sudo apt install -y $(cat pkglist.txt)
 else
     echo "Warning: pkglist.txt not found, skipping APT packages."
 fi
