@@ -24,12 +24,8 @@ sudo apt update
 sudo apt upgrade -y
 
 # Install packages from pkglist.txt
-if [ -f pkglist.txt ]; then
-    pkgs=`cat pkglist.txt`
-    for pkg in $pkgs ; do
-        echo "=== APT: Installing $pkg ==="
-        sudo apt install -y $pkg
-    done
+if [ -f pkglist.txt ] ; then
+    sudo apt install -y $(cat $pkg)
 else
     echo "Warning: pkglist.txt not found, skipping APT packages."
 fi
