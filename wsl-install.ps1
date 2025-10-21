@@ -28,10 +28,10 @@ if ($existing -contains $DistroName) {
     exit 1
 }
 
-# --- Install Ubuntu 22.04
-Write-Host "Installing Ubuntu 24.04 as '$DistroName'..."
+# --- Install Debian
+Write-Host "Installing Debian as '$DistroName'..."
 Write-Host "cmd: wsl --install -d Debian --name $DistroName --no-launch"
-wsl --install -d Ubuntu-24.04 --name $DistroName --no-launch
+wsl --install -d Debian --name $DistroName --no-launch
 
 # --- Create non-password user
 Write-Host "Creating user 'oohomes'..."
