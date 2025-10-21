@@ -29,7 +29,6 @@ libapache2-mod-wsgi-py3
 libattr1
 libtool-bin
 login
-mesa-utils
 ncurses-base
 ncurses-bin
 net-tools
@@ -57,4 +56,5 @@ tkcvs
 tmuxinator
 unzip
 util-linux
+wget
 zip

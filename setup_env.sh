@@ -55,8 +55,20 @@ else
     echo "No config.asc found, skipping config restore."
 fi
 
-# Get ledger repo:
+#Install firefox
+sudo install -d -m 0755 /etc/apt/keyrings
+wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O-  | sudo tee /etc/apt/keyrings/packages.mozilla.org.asc > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" | sudo tee -a /etc/apt/sources.list.d/mozilla.list > /dev/null
+echo ' Package: * Pin: origin packages.mozilla.org Pin-Priority: 1000 ' | sudo tee /etc/apt/preferences.d/mozilla
+sudo apt-get update && sudo apt-get install firefox
+
 pushd ~/
+# Install gecko driver
+wget https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz
+tar -xzvf geckodriver-v0.36.0-linux64.tar.gz
+sudo mv geckodriver /usr/local/bin
+
+# Get ledger repo:
 gh repo clone oohomes_ledger
 pip3 install -r oohomes_ledger/requirements.txt --break-system-packages
 sudo ln -s $HOME/oohomes_ledger /var/www/oohomes
@@ -73,3 +85,4 @@ ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Invoices $HOME/oohomes
 ln -s /mnt/c/Users/bjoos/Documents/NextCloud/Real\ Estate/Leases $HOME/oohomes_ledger/leases
 echo "=== Environment rebuild complete ==="
 echo "You may need to log out and back in for changes to dotfiles and shell configs to take effect."
+
