@@ -50,7 +50,7 @@ wsl -d $DistroName -- bash -c "echo '$wslConf' > /etc/wsl.conf"
 Write-Host "Running startup script in \$HOME..."
 wsl -d $DistroName -u oohomes -- bash -lc "sudo apt update; sudo apt install -y git"
 wsl -d $DistroName -u oohomes -- bash -lc "cd; git clone https://github.com/xubio/wsl-setup.git"
-wsl -d $DistroName -u oohomes -- bash -lc "cd; ~/wsl-setup/setup_env.sh $pass"
+wsl -d $DistroName -u oohomes -- bash -lc "cd; ~/wsl-setup/setup_env.sh $pass | tee ~/wsl-setup.log"
 
 Write-Host ""
 Write-Host "Default user: oohomes (no password)"
