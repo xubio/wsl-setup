@@ -1,12 +1,14 @@
 apache2
 cscope
 curl
+direnv
 dos2unix
 exuberant-ctags
 gh
 git
 jq
 ledger
+net-tools
 poppler-utils
 python3-bcrypt
 python3-dateutil
