@@ -48,7 +48,7 @@ wsl -d $DistroName -- bash -c "echo '$wslConf' > /etc/wsl.conf"
 
 # --- Run startup commands directly
 Write-Host "Running startup script in \$HOME..."
-wsl -d $DistroName -u oohomes -- bash -lc "sudo apt update; sudo apt install git"
+wsl -d $DistroName -u oohomes -- bash -lc "sudo apt update; sudo apt install -y git"
 wsl -d $DistroName -u oohomes -- bash -lc "cd; git clone https://github.com/xubio/wsl-setup.git"
 wsl -d $DistroName -u oohomes -- bash -lc "cd; ~/wsl-setup/setup_env.sh $pass"
 
