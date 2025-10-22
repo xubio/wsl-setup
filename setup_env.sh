@@ -63,6 +63,7 @@ pushd ~/
 wget https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz
 tar -xzvf geckodriver-v0.36.0-linux64.tar.gz
 sudo mv geckodriver /usr/local/bin
+rm -f geckodriver-v0.36.0-linux64.tar.gz
 
 # Get ledger repo:
 gh repo clone oohomes_ledger
