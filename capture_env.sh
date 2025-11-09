@@ -42,13 +42,18 @@ if [ -d /etc/apache2 ]; then
 #    git add apache2
 fi
 
+# emacs stuff
+cp -r ~/lisp .
+
 #4. tar up the config files.  These include secrets for git and such, so encrypt the data with supplied password
 thisdir=`pwd`
 pushd ~/
 echo "./.config/gh" > tlist
 find . -maxdepth 1 -type f -name ".*" ! -name ".bash_history" -print >> tlist
+find .ssh -name "*" -print >> tlist
+cat tlist
 tar -czf $thisdir/config.tgz -T tlist
-rm -f tlist
+#rm -f tlist
 popd
 gpg --batch --yes --passphrase $password --symmetric --cipher-algo AES256 --armor -o config.asc config.tgz
 #git add config.asc
