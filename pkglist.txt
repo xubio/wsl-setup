@@ -1,13 +1,11 @@
 apache2
 cscope
 curl
-dejavu-fonts
 direnv
 dos2unix
 emacs
 emacs
 exuberant-ctags
-fonts
 fonts-dejavu
 fonts-noto
 gh
@@ -15,8 +13,7 @@ git
 jq
 ledger
 net-tools
-nodejs -y
-openssh
+nodejs
 openssh-server
 poppler-utils
 python-is-python3
@@ -25,7 +22,6 @@ python3-dateutil
 python3-flask
 python3-fuzzywuzzy
 python3-gnupg
-python3-mcp
 python3-ofxclient
 python3-pandas
 python3-pip
