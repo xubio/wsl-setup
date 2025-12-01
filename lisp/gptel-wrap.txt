@@ -1,0 +1,888 @@
+;;; gptel-amd.el --- GPTel: AMD LLM Gateway Integration -*- lexical-binding: t; -*-
+
+;; Author: Conor Donohue <cdonohue@amd.com>
+;; Maintainer: Conor Donohue <cdonohue@amd.com>
+;; Version: 1.0.0
+;; Package-Requires: ((emacs "27.1") (gptel "0.1.0"))
+;; Keywords: comm, ai, tools
+
+;;; Commentary:
+;; Provides integration between GPTel and AMD's LLM Gateway service.
+;; 
+;; A "backend" represents a configured connection to an LLM service:
+;; - Azure OpenAI backends connect to Azure-hosted GPT models
+;; - Claude backends connect to Anthropic's Claude models
+;; 
+;; Backends are automatically configured based on available credentials
+;; in the user's authinfo file. Any entry matching the LLM Gateway URL
+;; will be used to create a corresponding backend with its available models.
+;;
+;; Features:
+;; - Automatic discovery of available models and credentials
+;; - Deduplication of redundant model deployments
+;; - Configuration caching for fast startup
+;; - Support for multiple LLM platforms
+;; - Dynamic backend creation based on authinfo entries
+
+;;; Code:
+
+(require 'gptel)
+(require 'json)
+(require 'auth-source)
+(require 'cl-lib)
+(require 'url)
+(require 'subr-x)
+
+;;;; Promise Implementation
+
+(cl-defstruct gptel-amd--promise
+  resolve reject state value)
+
+(defun gptel-amd--make-promise ()
+  "Create a new promise object."
+  (let ((promise (make-gptel-amd--promise :state 'pending)))
+    ;; Set resolvers after promise is created to properly capture it
+    (setf (gptel-amd--promise-resolve promise)
+          (lambda (val)
+            (setf (gptel-amd--promise-state promise) 'fulfilled
+                  (gptel-amd--promise-value promise) val))
+          (gptel-amd--promise-reject promise)
+          (lambda (err)
+            (setf (gptel-amd--promise-state promise) 'rejected
+                  (gptel-amd--promise-value promise) err)))
+    promise))
+
+(defun gptel-amd--promise-then (promise on-resolve &optional on-reject)
+  "Chain PROMISE with ON-RESOLVE and optional ON-REJECT handlers."
+  (let ((next-promise (gptel-amd--make-promise)))
+    (let ((old-resolve (gptel-amd--promise-resolve promise))
+          (old-reject (gptel-amd--promise-reject promise)))
+      (setf (gptel-amd--promise-resolve promise)
+            (lambda (val)
+              (funcall old-resolve val)
+              (condition-case err
+                  (let ((next-val (funcall on-resolve val)))
+                    (funcall (gptel-amd--promise-resolve next-promise) next-val))
+                (error 
+                 (funcall (gptel-amd--promise-reject next-promise) err))))
+            (gptel-amd--promise-reject promise)
+            (lambda (err)
+              (funcall old-reject err)
+              (if on-reject
+                  (condition-case err2
+                      (let ((next-val (funcall on-reject err)))
+                        (funcall (gptel-amd--promise-resolve next-promise) next-val))
+                    (error
+                     (funcall (gptel-amd--promise-reject next-promise) err2)))
+                (funcall (gptel-amd--promise-reject next-promise) err)))))
+    next-promise))
+
+;;;; Customization and Variables
+
+(defgroup gptel-amd nil
+  "AMD LLM Gateway integration for GPTel."
+  :group 'gptel)
+
+(defcustom gptel-amd-cache-file
+  (expand-file-name "gptel-amd/cache" (expand-file-name ".cache" user-emacs-directory))
+  "File for caching backend configuration."
+  :type 'file
+  :group 'gptel-amd)
+
+(defcustom gptel-amd-debug nil 
+  "Enable verbose debug logging."
+  :type 'boolean
+  :group 'gptel-amd)
+
+(defcustom gptel-amd-discovery-timeout 30
+  "Timeout in seconds for API discovery operations."
+  :type 'integer
+  :group 'gptel-amd)
+
+(defconst gptel-amd--platforms
+  `((azure-openai
+     :name "Azure-OpenAI"
+     :base-url "https://llm-api.amd.com"
+     :endpoints (:base "/openai/deployments/%s/chat/completions"
+                       :version "api-version=%s")
+     :api-version-fn gptel-amd--azure-get-api-version
+     :models-fn gptel-amd--azure-discover-models
+     :register-fn gptel-amd--azure-register)
+    (anthropic-claude
+     :name "VertexGen-Claude"
+     :base-url "https://llm-api.amd.com"
+     :endpoints (:base "/claude3/deployments/%s/chat/completions"
+                       :version "api-version=%s")
+     :api-version-fn nil
+     :models-fn gptel-amd--claude-discover-models
+     :register-fn gptel-amd--claude-register))
+  "Registry of supported LLM platforms with their configurations.")
+
+;; Helper functions
+(defun gptel-amd--ensure-cache-dir ()
+  "Ensure cache directory exists."
+  (make-directory (file-name-directory gptel-amd-cache-file) t))
+
+(defconst gptel-amd--log-buffer "*gptel-amd-log*"
+  "Buffer for logging messages.")
+
+;; My modified gptel-amd--choose-default-backend to select a claude-4 backend from AMD-VertexGen-Claude
+(defun gptel-amd--choose-default-backend (all-backends)
+  "Choose a suitable default backend from ALL-BACKENDS.
+Prioritizes the claude-4 model from AMD-VertexGen-Claude."
+  (when all-backends
+    ;; First try to find specifically claude-4 from AMD-VertexGen-Claude
+    (let ((claude4-backend (cl-find-if 
+                            (lambda (b)
+                              (let ((name (gptel-backend-name b)))
+                                (and (string-match-p "AMD-VertexGen-Claude" name)
+                                     (string-match-p "claude-4" name))))
+                            all-backends)))
+      ;; Fall back to first backend if no preferred model found
+      (or claude4-backend (car all-backends)))))
+
+(cl-defun gptel-amd--log (level msg &rest args)
+  "Log message at LEVEL with MSG and ARGS.
+LEVEL can be :debug, :info, :warn, or :error."
+  (let* ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
+         (level-info (cl-case level
+                       (:debug '(" DEBUG" . font-lock-comment-face))
+                       (:info  '("✓ INFO"   . success))
+                       (:warn  '("⚠ WARN"   . warning))
+                       (:error '("❌ ERROR"  . error))
+                       (t      '(" LOG"   . default))))
+         (formatted-msg (apply #'format msg args))
+         (log-entry (format "[%s] %s: %s\n" 
+                            timestamp 
+                            (car level-info) 
+                            formatted-msg)))
+    (with-current-buffer (get-buffer-create gptel-amd--log-buffer)
+      (goto-char (point-max))
+      (let ((inhibit-read-only t))
+        (insert (propertize log-entry 'face (cdr level-info)))))
+    ;; Echo important messages
+    (when (memq level '(:warn :error))
+      (message "%s" (propertize formatted-msg 'face (cdr level-info))))))
+
+(defmacro gptel-amd--debug (msg &rest args)
+  "Log debug message MSG with ARGS if debug is enabled."
+  `(when gptel-amd-debug
+     (gptel-amd--log :debug ,msg ,@args)))
+
+(defun gptel-amd--notify (msg &optional level)
+  "Show MSG in echo area with optional LEVEL (:info, :warn, :error)."
+  (let ((level-info (cl-case level
+                      (:warn  '("⚠" . warning))
+                      (:error '("❌" . error))
+                      (t      '("✓" . success)))))
+    (message "%s %s" (car level-info)
+             (propertize msg 'face (cdr level-info)))
+    (gptel-amd--log (or level :info) msg)))
+
+;;;; HTTP Utilities
+
+(cl-defun gptel-amd--http-get (url headers &key timeout)
+  "Make promise-based HTTP GET request to URL with HEADERS.
+Returns a promise that resolves with response body or rejects with error.
+TIMEOUT is in seconds."
+  (gptel-amd--debug "HTTP GET: %s" url)
+  (let ((promise (gptel-amd--make-promise))
+        (url-request-extra-headers headers)
+        (url-request-method "GET"))
+    (condition-case err
+        (url-retrieve
+         url
+         (lambda (status)
+           (if-let ((error-status (plist-get status :error)))
+               (funcall (gptel-amd--promise-reject promise)
+                        (error-message-string error-status))
+             (let (response-code)
+               ;; Get response code
+               (goto-char (point-min))
+               (when (re-search-forward "HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
+                 (setq response-code (string-to-number (match-string 1))))
+               
+               ;; Get response body
+               (goto-char (point-min))
+               (when (search-forward "\n\n" nil t)
+                 (let ((response (buffer-substring (point) (point-max))))
+                   (kill-buffer)
+                   (if (and response-code (>= response-code 400))
+                       (funcall (gptel-amd--promise-reject promise)
+                                (format "HTTP %d: %s" response-code response))
+                     (funcall (gptel-amd--promise-resolve promise) response)))))))
+         nil t timeout)
+      (error
+       (funcall (gptel-amd--promise-reject promise)
+                (error-message-string err))))
+    promise))
+
+(defun gptel-amd--json-parse (string)
+  "Parse JSON STRING safely, returning nil on error."
+  (condition-case err
+      (let ((json-array-type 'list)
+            (json-object-type 'alist))
+        (json-read-from-string string))
+    (error
+     (gptel-amd--log :error "JSON parse error: %s" err)
+     nil)))
+
+;;;; Platform Registry
+
+(defun gptel-amd--get-platform (platform)
+  "Lookup platform spec for PLATFORM."
+  (alist-get platform gptel-amd--platforms))
+
+(defun gptel-amd--find-matching-credentials ()
+  "Find all matching credentials from auth-source for LLM API."
+  (let ((urls (mapcar (lambda (p) 
+                        (plist-get (cdr p) :base-url))
+                      gptel-amd--platforms)))
+    (cl-loop for url in (delete-dups urls)
+             append (auth-source-search 
+                     :host (url-host (url-generic-parse-url url))
+                     :require '(:secret :user)
+                     :max 99))))
+
+(defun gptel-amd--discover-platform-env (platform spec auth-entry callback)
+  "Discover environment for PLATFORM with SPEC using AUTH-ENTRY."
+  (let* ((login (plist-get auth-entry :user))
+         (key (gptel-amd--get-key auth-entry)))
+    (if (not key)
+        (progn
+          (gptel-amd--log :warn "No valid key found for %s login '%s'" 
+                          (plist-get spec :name) login)
+          (funcall callback nil))
+      (let ((version-fn (plist-get spec :api-version-fn))
+            (models-fn (plist-get spec :models-fn)))
+        (if version-fn
+            ;; Get API version first, then models
+            (funcall version-fn 
+                     key
+                     (lambda (api-version)
+                       (funcall models-fn
+                                key
+                                (lambda (models)
+                                  (let ((unique-models
+                                         (when models
+                                           ;; Deduplicate models using hash table
+                                           (let ((models-hash (make-hash-table :test 'equal)))
+                                             (dolist (m models)
+                                               (puthash m t models-hash))
+                                             (hash-table-keys models-hash)))))
+                                    (funcall callback
+                                             (when unique-models
+                                               `(:key ,key 
+                                                      :api-version ,api-version 
+                                                      :models ,unique-models
+                                                      :login ,login))))))))
+          ;; No API version needed, get models directly
+          (funcall models-fn
+                   key
+                   (lambda (models)
+                     (let ((unique-models
+                            (when models
+                              ;; Deduplicate models using hash table
+                              (let ((models-hash (make-hash-table :test 'equal)))
+                                (dolist (m models)
+                                  (puthash m t models-hash))
+                                (hash-table-keys models-hash)))))
+                       (funcall callback
+                                (when unique-models
+                                  `(:key ,key 
+                                         :api-version "2023-05-15" 
+                                         :models ,unique-models
+                                         :login ,login)))))))))))
+
+(defun gptel-amd--make-backend (platform name key api-version model-deploy)
+  "Create backend for PLATFORM with NAME, KEY, API-VERSION and MODEL-DEPLOY pair.
+MODEL-DEPLOY should be a cons cell of (model-symbol . deployment-id)."
+  (gptel-amd--debug "Making backend: platform=%S name=%S api-version=%S model=%S"
+                    platform name api-version (car model-deploy))
+  (condition-case err
+      (let* ((spec (gptel-amd--get-platform platform))
+             (model (car model-deploy))
+             (deploy (cdr model-deploy))
+             (base-url (plist-get spec :base-url))
+             (endpoints (plist-get spec :endpoints))
+             (base-path (plist-get endpoints :base))
+             (version-path (plist-get endpoints :version))
+             (endpoint (concat (format base-path deploy) 
+                               "?" 
+                               (format version-path api-version)))
+             (header `(("Content-Type" . "application/json")
+                       ("Ocp-Apim-Subscription-Key" . ,key))))
+        (gptel-amd--debug "Creating backend with endpoint: %s for model %S" endpoint model)
+        ;; Return backend creation form - use provided name directly
+        `(:platform ,platform
+                    :name ,name
+                    :key ,key
+                    :host "llm-api.amd.com"
+                    :protocol "https"
+                    :endpoint ,endpoint
+                    :models (,model)
+                    :header ,header))
+    (error
+     (gptel-amd--log :error "Backend creation error: %s" err)
+     nil)))
+
+(defun gptel-amd--restore-backend (form)
+  "Restore backend from cached FORM."
+  (condition-case err
+      (let* ((platform (plist-get form :platform))
+             (name (plist-get form :name))
+             (key (plist-get form :key))
+             (endpoint (plist-get form :endpoint))
+             (models (plist-get form :models))
+             (header (plist-get form :header))
+             (request-params (plist-get form :request-params))
+             (make-fn (if (eq platform 'azure-openai)
+                          #'gptel-make-azure
+                        #'gptel-make-anthropic)))
+        (let ((backend (funcall make-fn
+                                name
+                                :protocol "https"
+                                :host "llm-api.amd.com"
+                                :endpoint endpoint
+                                :stream t
+                                :models models
+                                :header header
+                                :request-params request-params)))
+          ;; For Azure backends, make sure :max_completion_tokens is set
+          (when (eq platform 'azure-openai)
+            (dolist (model models)
+              (let ((model-params (get model :request-params)))
+                (unless (plist-member model-params :max_completion_tokens)
+                  (put model :request-params
+                       (plist-put (or model-params '()) 
+                                  :max_completion_tokens :null))))))
+          backend))
+    (error
+     (gptel-amd--log :error "Failed to restore backend: %s" err)
+     nil)))
+
+;;;; Credential Management
+
+(defun gptel-amd--get-key (auth-entry)
+  "Extract API key from AUTH-ENTRY."
+  (when-let ((secret-fn (plist-get auth-entry :secret)))
+    (funcall secret-fn)))
+
+;;;; Platform Discovery Orchestration
+
+(defun gptel-amd--discover-all (callback)
+  "Discover all platforms and environments. Call CALLBACK with results."
+  (let* ((platforms (mapcar #'car gptel-amd--platforms))
+         (auth-entries (gptel-amd--find-matching-credentials))
+         (total-expected (* (length platforms) (length auth-entries)))
+         (results (make-hash-table :test 'equal)) ; Changed to equal test
+         (completed 0))
+    (cl-labels ((check-complete (entry)
+                  (let* ((key (car entry))
+                         (platform (car key))
+                         (login (cdr key))
+                         (result (cdr entry)))
+                    (puthash (cons platform login)
+                             result
+                             results)
+                    (cl-incf completed)
+                    (when (= completed total-expected)
+                      (let ((platform-data
+                             (cl-loop for p in platforms
+                                      collect
+                                      (cons p
+                                            (cl-loop for a in auth-entries
+                                                     for login = (plist-get a :user)
+                                                     for result = (gethash (cons p login) results)
+                                                     when result
+                                                     collect (cons login result))))))
+                        (gptel-amd--debug "Discovery completed: %S" platform-data)
+                        (funcall callback platform-data))))))
+      (dolist (platform platforms)
+        (dolist (auth auth-entries)
+          (let ((p platform)
+                (a auth))
+            (let ((promise (gptel-amd--make-promise)))
+              (gptel-amd--discover-platform-env
+               p (gptel-amd--get-platform p) a
+               (lambda (result)
+                 (funcall (gptel-amd--promise-resolve promise)
+                          (cons (cons p (plist-get a :user)) result))))
+              (gptel-amd--promise-then promise #'check-complete))))))))
+
+;;;; Platform-Specific Implementations - Azure
+
+(defun gptel-amd--azure-get-api-version (key callback)
+  "Get latest Azure OpenAI API version with KEY."
+  (gptel-amd--promise-then
+   (gptel-amd--http-get
+    "https://llm-api.amd.com/api/Home/AvailableDeployment/OpenAI/ApiVersions"
+    `(("Ocp-Apim-Subscription-Key" . ,key))
+    :timeout 30)
+   (lambda (body)
+     (let* ((versions (and body (gptel-amd--json-parse body)))
+            (latest (when (and versions (listp versions))
+                      (car (last versions)))))
+       (gptel-amd--log :info "Azure API version detected: %s" latest)
+       (funcall callback latest)))
+   (lambda (err)
+     (gptel-amd--log :error "Azure API version fetch failed: %s" err)
+     (funcall callback nil))))
+
+(defun gptel-amd--azure-discover-models (key callback)
+  "Discover available Azure models with KEY."
+  (gptel-amd--promise-then
+   (gptel-amd--http-get
+    "https://llm-api.amd.com/api/HealthStatus/GetHealthStatus"
+    `(("Ocp-Apim-Subscription-Key" . ,key))
+    :timeout 30)
+   (lambda (body)
+     (let ((json (and body (gptel-amd--json-parse body)))
+           models)
+       (dolist (section json)
+         (let ((aoai (alist-get "Azure OpenAI" section nil nil #'string=)))
+           (when aoai
+             (dolist (m aoai)
+               (let ((model (alist-get "model" m nil nil #'string=))
+                     (deploy (alist-get "deploymentID" m nil nil #'string=)))
+                 (when (and model deploy)
+                   (push (cons (intern model) deploy) models)))))))
+       (gptel-amd--debug "Azure models found: %s" (mapcar #'car models))
+       (funcall callback (nreverse models))))
+   (lambda (err)
+     (gptel-amd--log :error "Azure model discovery failed: %s" err)
+     (funcall callback nil))))
+
+(defun gptel-amd--azure-register (name key api-version models)
+  "Register Azure backend NAME with KEY, API-VERSION and MODELS."
+  (gptel-amd--debug "Creating Azure backend: name=%S api-version=%S models=%d"
+                    name api-version (length models))
+  (when (and models api-version)
+    (let ((result (gptel-amd--make-backend 'azure-openai name key api-version models)))
+      ;; Add max_completion_tokens: null to request-params
+      (when result
+        (let ((request-params (plist-get result :request-params)))
+          (setq request-params 
+                (plist-put (or request-params '()) :max_completion_tokens :null))
+          (setq result (plist-put result :request-params request-params))))
+      (gptel-amd--debug "Azure backend creation result: %S" result)
+      result)))
+
+;;;; Platform-Specific Implementations - Claude
+
+(defun gptel-amd--claude-get-api-version (_key callback)
+  "Get Claude API version (static)."
+  (funcall callback "2023-05-15"))
+
+(defun gptel-amd--claude-discover-models (key callback)
+  "Discover available Claude models with KEY."
+  (gptel-amd--promise-then
+   (gptel-amd--http-get
+    "https://llm-api.amd.com/api/HealthStatus/GetHealthStatus"
+    `(("Ocp-Apim-Subscription-Key" . ,key))
+    :timeout 30)
+   (lambda (body)
+     (let ((models nil))
+       (dolist (section (and body (gptel-amd--json-parse body)))
+         (dolist (field '("VertexGen AI" "VertexGenAI"))
+           (when-let ((lst (alist-get field section nil nil #'string=)))
+             (dolist (m lst)
+               (let ((model (alist-get "model" m nil nil #'string=))
+                     (deploy (alist-get "deploymentID" m nil nil #'string=)))
+                 (when (and model deploy (string-match-p "^claude[-.]" model))
+                   (push (cons (intern model) deploy) models)))))))
+       (gptel-amd--debug "Claude models found: %s" (mapcar #'car models))
+       (funcall callback (nreverse models))))
+   (lambda (err)
+     (gptel-amd--log :error "Claude model discovery failed: %s" err)
+     (funcall callback nil))))
+
+(defun gptel-amd--claude-register (name key api-version models)
+  "Register Claude backend NAME with KEY, API-VERSION and MODELS."
+  (gptel-amd--debug "Creating Claude backend: name=%S api-version=%S models=%d"
+                    name api-version (length models))
+  (when models
+    (let ((result (gptel-amd--make-backend 'anthropic-claude name key api-version models)))
+      (gptel-amd--debug "Claude backend creation result: %S" result)
+      result)))
+
+;;;; Cache Management
+
+(defun gptel-amd--save-cache (data)
+  "Save DATA to cache file with safety checks."
+  (gptel-amd--log :info "Attempting to save cache to %s" gptel-amd-cache-file)
+  (condition-case err
+      (progn 
+        (gptel-amd--ensure-cache-dir)
+        (gptel-amd--log :info "Cache directory ensured")
+        (let ((print-length nil)
+              (print-level nil)
+              (print-circle t)) ; Handle circular references
+          (with-temp-file gptel-amd-cache-file
+            (condition-case write-err
+                (prin1 data (current-buffer))
+              (error
+               (gptel-amd--log :error "Failed to write cache data: %s" write-err)
+               (signal 'file-error (list "Cache write failed" write-err))))))
+        (gptel-amd--log :info "Cache successfully saved"))
+    (error
+     (gptel-amd--log :error "Cache write failed: %s" err)
+     nil)))
+
+(defun gptel-amd--load-cache ()
+  "Load cached backend configuration with safety checks."
+  (gptel-amd--log :info "Attempting to load cache from %s" gptel-amd-cache-file)
+  (if (file-exists-p gptel-amd-cache-file)
+      (condition-case err
+          (let ((cache-contents
+                 (with-temp-buffer
+                   ;; Read file with size limit to prevent hanging
+                   (insert-file-contents-literally gptel-amd-cache-file nil 0 100000)
+                   (condition-case timeout-err
+                       (with-timeout (2
+                                      (progn
+                                        (gptel-amd--notify 
+                                         "Cache read timed out, falling back to discovery" 
+                                         :warn)
+                                        nil))
+                         (read (current-buffer)))
+                     (error
+                      (gptel-amd--log :warn "Timeout reading cache: %s" timeout-err)
+                      nil)))))
+            (if cache-contents
+                (progn
+                  (gptel-amd--log :info "Cache successfully loaded")
+                  cache-contents)
+              (gptel-amd--log :warn "Empty or invalid cache contents")
+              nil))
+        (error
+         (gptel-amd--log :warn "Failed to read cache: %s" err)
+         nil))
+    (progn
+      (gptel-amd--notify "No cache file found, performing initial discovery" :warn)
+      (gptel-amd--log :warn "Cache file not found at %s" gptel-amd-cache-file)
+      nil)))
+
+(defun gptel-amd--validate-cache (data)
+  "Validate cached DATA structure."
+  (condition-case err
+      (and (listp data)
+           (plist-get data :backends)
+           (let ((backends (plist-get data :backends)))
+             (and (listp backends)
+                  (cl-every (lambda (form)
+                              (and (plist-get form :name)
+                                   (plist-get form :platform)
+                                   (plist-get form :endpoint)
+                                   (plist-get form :models)))
+                            backends)))
+           (stringp (plist-get data :default-backend))
+           (symbolp (plist-get data :default-model)))
+    (error
+     (gptel-amd--log :error "Cache validation failed: %s" err)
+     nil)))
+
+(defun gptel-amd--restore-from-cache (cache)
+  "Restore backends from CACHE and return list of restored backends."
+  (let ((restored nil))
+    (dolist (form (plist-get cache :backends))
+      (condition-case err
+          (when-let ((backend (gptel-amd--restore-backend form)))
+            (push backend restored)
+            (gptel-amd--log :info "Restored backend %s for model %s"
+                            (gptel-backend-name backend)
+                            (car (gptel-backend-models backend))))
+        (error
+         (gptel-amd--log :error "Failed to restore backend: %s" err))))
+    (nreverse restored)))
+
+(defun gptel-amd--configure-default-backend (cache backends)
+  "Configure default backend from CACHE using BACKENDS."
+  (when-let* ((default-name (plist-get cache :default-backend))
+              (default-model (plist-get cache :default-model))
+              (matching-backend (cl-find default-name backends 
+                                         :key #'gptel-backend-name 
+                                         :test #'string=)))
+    (setq-default gptel-backend matching-backend)
+    (when (symbolp default-model)
+      (setq-default gptel-model default-model))))
+
+(defun gptel-amd--apply-cache ()
+  "Apply cached backend configuration if available."
+  (gptel-amd--log :info "Attempting to apply cache")
+  (condition-case err
+      (when-let ((cache (gptel-amd--load-cache)))
+        (if (gptel-amd--validate-cache cache)
+            (let ((restored-backends (gptel-amd--restore-from-cache cache)))
+              (if restored-backends
+                  (progn
+                    (gptel-amd--log :info "Successfully restored %d backends" 
+                                    (length restored-backends))
+                    ;; Configure default backend in a separate step
+                    (run-with-timer 0.1 nil #'gptel-amd--configure-default-backend 
+                                    cache restored-backends)
+                    (run-with-timer 0.2 nil #'gptel-amd--notify 
+                                    "✨ GPTel backends ready to use" :info)
+                    t)
+                (gptel-amd--log :warn "No backends were successfully restored")
+                nil))
+          (gptel-amd--log :warn "Invalid cache structure")
+          nil))
+    (error
+     (gptel-amd--log :error "Cache restoration failed: %s" err)
+     nil)))
+
+;;;; Registration and Summary
+
+(defun gptel-amd--register-environment (platform env-data login)
+  "Register backends for PLATFORM using ENV-DATA and LOGIN credentials.
+Creates separate backends for each model."
+  (gptel-amd--debug "Registering environment: platform=%S login=%S" 
+                    platform login)
+  (condition-case err
+      (when (and env-data (plist-get env-data :models))
+        (let* ((spec (gptel-amd--get-platform platform))
+               (platform-name (plist-get spec :name))
+               (key (plist-get env-data :key))
+               (api-version (plist-get env-data :api-version))
+               (all-models (plist-get env-data :models))
+               (results nil))
+          
+          ;; Create one backend for each model
+          (dolist (model-deploy all-models)
+            (let* ((model (car model-deploy))
+                   (deploy (cdr model-deploy))
+                   (backend-name (format "AMD-%s-%s-%s" 
+                                         platform-name 
+                                         (symbol-name model)
+                                         login))
+                   ;; Create endpoint for this specific model
+                   (base-url (plist-get spec :base-url))
+                   (endpoints (plist-get spec :endpoints))
+                   (base-path (plist-get endpoints :base))
+                   (version-path (plist-get endpoints :version))
+                   (endpoint (concat (format base-path deploy) 
+                                     "?" 
+                                     (format version-path api-version)))
+                   (header `(("Content-Type" . "application/json")
+                             ("Ocp-Apim-Subscription-Key" . ,key)))
+                   ;; Create a backend form for this model
+                   (form `(:platform ,platform
+                                     :name ,backend-name
+                                     :key ,key
+                                     :host "llm-api.amd.com"
+                                     :protocol "https"
+                                     :endpoint ,endpoint
+                                     :models (,model)
+                                     :header ,header)))
+              
+              ;; Create the actual backend for immediate use
+              (let ((backend (gptel-amd--restore-backend form)))
+                (when backend
+                  (gptel-amd--log :info "Created backend %s for model %s" 
+                                  backend-name model)
+                  (push (cons backend form) results)))))
+          
+          results))
+    (error
+     (gptel-amd--log :error "Registration error for %s: %s" platform err)
+     nil)))
+
+(defun gptel-amd--summarize-discoveries (platform-data)
+  "Create summary of discovered models from PLATFORM-DATA (alist)."
+  (let ((azure-count 0) (azure-names '())
+        (claude-count 0) (claude-names '())
+        (backend-count 0))
+    ;; First, log detailed model information
+    (dolist (entry platform-data)
+      (let* ((platform (car entry))
+             (envs (cdr entry)))
+        (dolist (env-entry envs)
+          (let* ((login (car env-entry))
+                 (env-data (cdr env-entry))
+                 (models (plist-get env-data :models)))
+            (when models
+              (cl-incf backend-count)
+              ;; Log all models for this backend
+              (gptel-amd--log :info "Models for %s-%s:"
+                              (if (eq platform 'azure-openai)
+                                  "Azure-OpenAI"
+                                "VertexGen-Claude")
+                              login)
+              (dolist (model models)
+                (gptel-amd--log :info "  • %s (deployment: %s)"
+                                (car model) (cdr model)))
+              ;; Collect summary information
+              (if (eq platform 'azure-openai)
+                  (progn
+                    (cl-incf azure-count (length models))
+                    (setq azure-names
+                          (append azure-names
+                                  (mapcar (lambda (m) (symbol-name (car m)))
+                                          models))))
+                (cl-incf claude-count (length models))
+                (setq claude-names
+                      (append claude-names
+                              (mapcar (lambda (m) (symbol-name (car m)))
+                                      models)))))))))
+    `(:azure-count ,azure-count :azure-names ,azure-names
+                   :claude-count ,claude-count :claude-names ,claude-names
+                   :backend-count ,backend-count)))
+
+(defun gptel-amd--display-summary (summary &optional source)
+  "Display discovery SUMMARY, optionally noting SOURCE."
+  (let ((azure-count (plist-get summary :azure-count))
+        (azure-names (plist-get summary :azure-names))
+        (claude-count (plist-get summary :claude-count))
+        (claude-names (plist-get summary :claude-names))
+        (backend-count (plist-get summary :backend-count)))
+    
+    ;; Overall summary first
+    (if (> (+ (or azure-count 0) (or claude-count 0)) 0)
+        (progn
+          (gptel-amd--notify
+           (format "✨ GPTel configured with %d backends (%d models)%s"
+                   backend-count
+                   (+ (or azure-count 0) (or claude-count 0))
+                   (if source (format " (%s)" source) "")))
+          (gptel-amd--log :info "Configuration complete with:")
+          (gptel-amd--log :info "  • %d total backends (one per model)" backend-count)
+          (when (> azure-count 0)
+            (gptel-amd--log :info "  • %d Azure OpenAI models" azure-count))
+          (when (> claude-count 0)
+            (gptel-amd--log :info "  • %d Claude models" claude-count)))
+      (gptel-amd--notify "❌ No AMD LLM connections configured!" :error))
+    
+    ;; Azure summary
+    (when (and azure-count (> azure-count 0))
+      (gptel-amd--notify 
+       (format " Found %d Azure OpenAI models (e.g., %s)"
+               azure-count
+               (string-join (seq-take azure-names 3) ", "))))
+    
+    ;; Claude summary
+    (when (and claude-count (> claude-count 0))
+      (gptel-amd--notify
+       (format " Found %d Claude models (e.g., %s)"
+               claude-count
+               (string-join (seq-take claude-names 3) ", "))))))
+
+;;;; Main Interface
+
+(defun gptel-amd--process-discovery-results (platform-data)
+  "Process discovery results from PLATFORM-DATA and return info about created backends.
+Returns a plist with :cache-data, :created-backends, and :summary."
+  (gptel-amd--debug "Processing discovery data: %S" platform-data)
+  (let ((cache-data (list :backends nil))
+        (created-backends nil))
+    ;; Create backends for each platform and environment
+    (dolist (entry platform-data)
+      (let* ((platform (car entry))
+             (envs (cdr entry)))
+        (dolist (env-entry envs)
+          (let* ((login (car env-entry))
+                 (env-data (cdr env-entry))
+                 (results (gptel-amd--register-environment platform env-data login)))
+            (when results
+              (dolist (result results)
+                (setf (plist-get cache-data :backends)
+                      (cons (cdr result) (plist-get cache-data :backends)))
+                (push (car result) created-backends)))))))
+    
+    ;; Choose a default backend
+    (when-let ((default-backend (gptel-amd--choose-default-backend created-backends)))
+      (setf (plist-get cache-data :default-backend)
+            (gptel-backend-name default-backend)
+            (plist-get cache-data :default-model)
+            (car (gptel-backend-models default-backend))))
+    
+    ;; Generate summary of discoveries
+    (let ((summary (gptel-amd--summarize-discoveries platform-data)))
+      (list :cache-data cache-data
+            :created-backends created-backends
+            :summary summary))))
+
+(defun gptel-amd--save-and-apply-config (result-data &optional respect-existing)
+  "Save and apply configuration from RESULT-DATA.
+When RESPECT-EXISTING is non-nil, don't override existing default backend."
+  (let ((cache-data (plist-get result-data :cache-data))
+        (created-backends (plist-get result-data :created-backends)))
+    
+    ;; Validate and save cache
+    (if (gptel-amd--validate-cache cache-data)
+        (progn
+          (gptel-amd--save-cache cache-data)
+          (gptel-amd--notify " Configuration saved to cache")
+          
+          ;; Set default backend if needed
+          (when (and (not (and respect-existing
+                               (boundp 'gptel-backend)
+                               (default-boundp 'gptel-backend)
+                               (default-value 'gptel-backend)))
+                     created-backends)
+            (when-let* ((default-name (plist-get cache-data :default-backend))
+                        (default-model (plist-get cache-data :default-model))
+                        (matching-backend (cl-find default-name created-backends
+                                                   :key #'gptel-backend-name
+                                                   :test #'string=)))
+              (setq-default gptel-backend matching-backend
+                            gptel-model default-model))))
+      (gptel-amd--log :error "Invalid cache data structure generated"))))
+
+(defun gptel-amd--run-discovery (callback &optional notify-start)
+  "Run model discovery and call CALLBACK with results.
+When NOTIFY-START is non-nil, notify user discovery is starting."
+  (when notify-start
+    (gptel-amd--notify " Discovering AMD LLM models..."))
+  
+  (gptel-amd--discover-all
+   (lambda (platform-data)
+     (condition-case err
+         (funcall callback platform-data)
+       (error
+        (gptel-amd--log :error "Error in discovery callback: %s" 
+                        (error-message-string err)))))))
+
+;;;###autoload
+(defun gptel-amd-refresh ()
+  "Manually refresh AMD GPTel backends."
+  (interactive)
+  (gptel-amd--notify " Refreshing AMD GPTel backends...")
+  (gptel-amd--run-discovery
+   (lambda (platform-data)
+     (let ((result (gptel-amd--process-discovery-results platform-data)))
+       (gptel-amd--save-and-apply-config result)
+       (gptel-amd--display-summary (plist-get result :summary) "manual refresh")))
+   t))
+
+;;;; Startup
+
+;; Try to load from cache first, then always run background discovery
+(run-with-idle-timer
+ 1 nil
+ (lambda ()
+   (condition-case err-var
+       (progn
+         (gptel-amd--log :info "Attempting to load backends from cache...")
+         (if (gptel-amd--apply-cache)
+             (gptel-amd--log :info "Successfully loaded backends from cache")
+           (gptel-amd--log :info "Cache loading failed, will wait for discovery..."))
+         
+         ;; Always run discovery in the background, regardless of cache status
+         (run-with-idle-timer
+          2 nil
+          (lambda ()
+            (gptel-amd--log :info "Starting async model discovery...")
+            (gptel-amd--run-discovery
+             (lambda (platform-data)
+               (let ((result (gptel-amd--process-discovery-results platform-data)))
+                 ;; Use respect-existing=t to avoid overriding existing default backend
+                 (gptel-amd--save-and-apply-config result t)
+                 (gptel-amd--display-summary 
+                  (plist-get result :summary) "background discovery")))))))
+     (error
+      (gptel-amd--log :error "Error during startup: %s" 
+                      (error-message-string err-var))))))
+
+(provide 'gptel-amd)
+;;; gptel-amd.el ends here
