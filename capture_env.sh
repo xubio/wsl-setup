@@ -48,13 +48,11 @@ pushd ~/
 echo "./.config/gh" > tlist
 find . -maxdepth 1 -type f -name ".*" ! -name ".bash_history" -print >> tlist
 find .ssh -name "*" -print >> tlist
-# Include emacs lisp stuff
-find lisp -name "*" -print >> tlist
 cat tlist
 tar -czf $thisdir/config.tgz -T tlist
 #rm -f tlist
 popd
-#gpg --batch --yes --passphrase $password --symmetric --cipher-algo AES256 --armor -o config.asc config.tgz
+gpg --batch --yes --passphrase $password --symmetric --cipher-algo AES256 --armor -o config.asc config.tgz
 #git add config.asc
 
 echo
