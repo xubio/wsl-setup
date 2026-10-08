@@ -1,3 +1,5 @@
 Hostname: delloohome
-Distro: Ubuntu 24.04.2 LTS
-Linux delloohome 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+Distro: Debian GNU/Linux 13 (trixie)
+WSL distro: oohomes-debian
+Linux delloohome 6.18.40.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Fri Jul 31 22:12:15 UTC 2026 x86_64 GNU/Linux
+Captured: 20261007-213133
