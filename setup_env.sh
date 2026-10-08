@@ -183,13 +183,13 @@ fi
 sudo apt install -y python3-pip || echo "warning: could not install python3-pip" >&2
 
 # Python packages pip-installed into the user site by capture_env.sh.
-if [ -f requirements.txt ]; then
-    echo "=== Installing Python packages ==="
-    pip3 install --user --break-system-packages -r requirements.txt \
-        || echo "warning: some pip packages failed to install" >&2
-else
-    echo "Warning: requirements.txt not found, skipping Python packages." >&2
-fi
+# if [ -f requirements.txt ]; then
+#     echo "=== Installing Python packages ==="
+#     pip3 install --user --break-system-packages -r requirements.txt \
+#         || echo "warning: some pip packages failed to install" >&2
+# else
+#     echo "Warning: requirements.txt not found, skipping Python packages." >&2
+# fi
 
 # Decrypt and extract config archive
 if [ -f config.asc ]; then

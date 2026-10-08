@@ -16,8 +16,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Write-Error "ERROR: run this script from an Administrator PowerShell (enabling WSL and writing sudoers both need it)."
     exit 1
 }
+$passenc = Read-Host -AsSecureString "Enter password to use for setup_env.sh"
+$pass = [System.Net.NetworkCredential]::new("", $passenc).Password
 
-$pass = Read-Host "Enter password to use for setup_env.sh"
 if ([string]::IsNullOrEmpty($pass)) {
     Write-Error "ERROR: no password given. It decrypts config.asc, so the rebuild cannot proceed without it."
     exit 1
