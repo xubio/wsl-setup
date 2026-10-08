@@ -1,0 +1,10 @@
+# Plaintext secret intermediates from capture_env.sh / setup_env.sh.
+# Only the encrypted config.asc is meant to be committed: the archives below
+# contain .git-credentials, .ssh/* and the gh OAuth token (.config/gh/hosts.yml).
+config.tgz
+config2.tgz
+*.tgz
+tlist
+
+# Local agent/tooling state
+.codewhale/

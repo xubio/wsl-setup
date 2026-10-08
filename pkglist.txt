@@ -1,5 +1,4 @@
 adduser
-apache2
 apt
 apt-transport-https
 apt-utils

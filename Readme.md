@@ -32,9 +32,13 @@ The distro is disposable; this repo is the source of truth.
   repo will produce a different (stale) machine.
 
 * `setup_env.sh <password>` rebuilds a fresh distro from those files.  It is
-  invoked automatically by `wsl-install.ps1`.  Third-party apt repositories
-  (Mozilla for `firefox`, NodeSource for `nodejs`) are configured before
-  `pkglist.txt` is installed, because those two packages are not in Debian.
+  invoked automatically by `wsl-install.ps1`, which passes the password in
+  `$SETUP_PASSWORD` rather than on the command line; `setup_env.sh` accepts
+  either.  Third-party apt repositories (Mozilla for `firefox`, NodeSource for
+  `nodejs`) are configured before `pkglist.txt` is installed, because those two
+  packages are not in Debian.  Its signing keys are re-fetched and verified on
+  every run, so a distro whose keyrings have gone stale is repaired rather than
+  rejected.
 
 ## Running the ledger ##
 
