@@ -14,7 +14,7 @@
 (bind-key* "\C-ce" 'fixup-whitespace)
 (bind-key* "\C-xk" 'kill-current-buffer)
 (bind-key* "\C-x\C-k" 'kill-current-buffer)
-
+(bind-key* "\C-cl" 'display-line-numbers-mode)
 (bind-key* "\C-cn" 'increment-number-at-point)
 (bind-key* "\C-c\C-n" 'increment-number-at-point)
 ;; Remap Home and End keys to move within current line, and
@@ -74,3 +74,4 @@
 (bind-key* [(meta n)] 'my-scroll-up)
 (bind-key* [(meta o)] 'my-scroll-down)
 (bind-key* [(meta m)] 'my-scroll-up)
+(bind-key* [(meta z)] 'my-occur)
